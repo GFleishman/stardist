@@ -28,7 +28,7 @@ from ..nms import non_maximum_suppression_3d
 
 class StarDistData3D(StarDistDataBase):
 
-    def __init__(self, X, Y, batch_size, rays, patch_size=(128,128,128), grid=(1,1,1), anisotropy=None, augmenter=None, foreground_prob=0, **kwargs):
+    def __init__(self, X, Y, batch_size, rays, patch_size=(128,128,128), grid=(1,1,1), step_divisor=1.0, anisotropy=None, augmenter=None, foreground_prob=0, **kwargs):
         # TODO: support shape completion as in 2D?
 
         super().__init__(X=X, Y=Y, n_rays=len(rays), grid=grid,
@@ -37,6 +37,7 @@ class StarDistData3D(StarDistDataBase):
 
         self.rays = rays
         self.anisotropy = anisotropy
+        self.step_divisor = step_divisor
         self.sd_mode = 'opencl' if self.use_gpu else 'cpp'
 
         # re-use arrays
@@ -74,7 +75,7 @@ class StarDistData3D(StarDistDataBase):
         else:
             prob = np.stack(tmp, out=self.out_edt_prob[:len(Y)])
 
-        tmp = [star_dist3D(lbl, self.rays, mode=self.sd_mode) for lbl in Y]
+        tmp = [star_dist3D(lbl, self.rays, mode=self.sd_mode, step_divisor=self.step_divisor) for lbl in Y]
         if len(Y) == 1:
             dist = tmp[0][np.newaxis]
         else:
@@ -168,6 +169,8 @@ class Config3D(BaseConfig):
         Parameter :class:`dict` of ReduceLROnPlateau_ callback; set to ``None`` to disable.
     use_gpu : bool
         Indicate that the data generator should use OpenCL to do computations on the GPU.
+    step_divisor : float
+        dx/dy/dz step size divisor for distance construction from labels, larger => more accurate dists, but slower, default = 1.0
 
         .. _ReduceLROnPlateau: https://keras.io/callbacks/#reducelronplateau
     """
@@ -251,6 +254,7 @@ class Config3D(BaseConfig):
         self.train_reduce_lr           = {'factor': 0.5, 'patience': 40, min_delta_key: 0}
 
         self.use_gpu                   = False
+        self.step_divisor              = 1.0
 
         # remove derived attributes that shouldn't be overwritten
         for k in ('n_dim', 'n_channel_out', 'n_rays', 'rays_json'):
@@ -448,7 +452,7 @@ class StarDist3D(StarDistBase):
 
         # generate validation data and store in numpy arrays
         # data_val = StarDistData3D(*validation_data, batch_size=1, augment=False, **data_kwargs)
-        _data_val = StarDistData3D(*validation_data, batch_size=1, **data_kwargs)
+        _data_val = StarDistData3D(*validation_data, batch_size=1, step_divisor=self.config.step_divisor, **data_kwargs)
         n_data_val = len(_data_val)
         n_take = self.config.train_n_val_patches if self.config.train_n_val_patches is not None else n_data_val
         ids = tuple(np.random.choice(n_data_val, size=n_take, replace=(n_take > n_data_val)))
@@ -458,7 +462,7 @@ class StarDist3D(StarDistBase):
         Xv, Mv, Pv, Dv = np.concatenate(Xv,axis=0), np.concatenate(Mv,axis=0), np.concatenate(Pv,axis=0), np.concatenate(Dv,axis=0)
         data_val = [[Xv,Mv],[Pv,Dv]]
 
-        data_train = StarDistData3D(X, Y, batch_size=self.config.train_batch_size, augmenter=augmenter, **data_kwargs)
+        data_train = StarDistData3D(X, Y, batch_size=self.config.train_batch_size, augmenter=augmenter, step_divisor=self.config.step_divisor, **data_kwargs)
 
         for cb in self.callbacks:
             if isinstance(cb,CARETensorBoard):

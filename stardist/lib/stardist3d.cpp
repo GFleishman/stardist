@@ -253,9 +253,10 @@ static PyObject* c_star_dist3d(PyObject *self, PyObject *args) {
 
   int n_rays;
   int grid_x, grid_y, grid_z;
+  float step_divisor;
 
 
-  if (!PyArg_ParseTuple(args, "O!O!O!O!iiii", &PyArray_Type, &src, &PyArray_Type, &pdz ,&PyArray_Type, &pdy,&PyArray_Type, &pdx, &n_rays,&grid_z,&grid_y,&grid_x))
+  if (!PyArg_ParseTuple(args, "O!O!O!O!iiiif", &PyArray_Type, &src, &PyArray_Type, &pdz ,&PyArray_Type, &pdy,&PyArray_Type, &pdx, &n_rays,&grid_z,&grid_y,&grid_x,&step_divisor))
     return NULL;
 
   npy_intp *dims = PyArray_DIMS(src);
@@ -283,9 +284,9 @@ static PyObject* c_star_dist3d(PyObject *self, PyObject *args) {
 
           for (int n = 0; n < n_rays; n++) {
 
-            float dx = *(float *)PyArray_GETPTR1(pdx,n);
-            float dy = *(float *)PyArray_GETPTR1(pdy,n);
-            float dz = *(float *)PyArray_GETPTR1(pdz,n);
+            float dx = *(float *)PyArray_GETPTR1(pdx,n)/step_divisor;
+            float dy = *(float *)PyArray_GETPTR1(pdy,n)/step_divisor;
+            float dz = *(float *)PyArray_GETPTR1(pdz,n)/step_divisor;
 
             float x = 0, y = 0, z=0;
             // move along ray

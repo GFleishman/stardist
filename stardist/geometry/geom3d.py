@@ -12,7 +12,7 @@ from ..lib.stardist3d import c_star_dist3d, c_polyhedron_to_label
 
 
 
-def _cpp_star_dist3D(lbl, rays, grid=(1,1,1)):
+def _cpp_star_dist3D(lbl, rays, grid=(1,1,1), step_divisor=1.0):
     dz, dy, dx = rays.vertices.T
     grid = _normalize_grid(grid,3)
 
@@ -20,7 +20,8 @@ def _cpp_star_dist3D(lbl, rays, grid=(1,1,1)):
                          dz.astype(np.float32, copy=False),
                          dy.astype(np.float32, copy=False),
                          dx.astype(np.float32, copy=False),
-                         int(len(rays)), *tuple(int(a) for a in grid))
+                         int(len(rays)), *tuple(int(a) for a in grid),
+                         step_divisor)
 
 
 def _py_star_dist3D(img, rays, grid=(1,1,1)):
@@ -81,14 +82,14 @@ def _ocl_star_dist3D(lbl, rays, grid=(1,1,1)):
     return dist_g.get()
 
 
-def star_dist3D(lbl, rays, grid=(1,1,1), mode='cpp'):
+def star_dist3D(lbl, rays, grid=(1,1,1), mode='cpp', step_divisor=1.0):
     """lbl assumbed to be a label image with integer values that encode object ids. id 0 denotes background."""
 
     grid = _normalize_grid(grid,3)
     if mode == 'python':
         return _py_star_dist3D(lbl, rays, grid=grid)
     elif mode == 'cpp':
-        return _cpp_star_dist3D(lbl, rays, grid=grid)
+        return _cpp_star_dist3D(lbl, rays, grid=grid, step_divisor=step_divisor)
     elif mode == 'opencl':
         return _ocl_star_dist3D(lbl, rays, grid=grid)
     else:
@@ -196,11 +197,11 @@ def polyhedron_to_label(dist, points, rays, shape, prob=None, thr=-np.inf, label
                                  )
 
 
-def relabel_image_stardist3D(lbl, rays, verbose=False, **kwargs):
+def relabel_image_stardist3D(lbl, rays, verbose=False, step_divisor=1.0, **kwargs):
     """relabel each label region in `lbl` with its star representation"""
     _check_label_array(lbl, "lbl")
 
-    dist_all = star_dist3D(lbl, rays, **kwargs)
+    dist_all = star_dist3D(lbl, rays, step_divisor=step_divisor, **kwargs)
 
     regs = regionprops(lbl)
 
