@@ -1,3 +1,5 @@
+// c.f. https://stackoverflow.com/questions/31971185/segfault-when-import-array-not-in-same-translation-unit
+#define PY_ARRAY_UNIQUE_SYMBOL STARDIST_SHARED_ARRAY_API
 #include <Python.h>
 #include "numpy/arrayobject.h"
 #include "numpy/npy_math.h"
@@ -50,7 +52,7 @@ static PyObject* c_non_max_suppression_inds(PyObject *self, PyObject *args) {
   bool * result = (bool*) PyArray_DATA(arr_result);
 
 
-  _COMMON_non_maximum_suppression_sparse(scores,dist, points,
+  _COMMON_non_maximum_suppression_sparse(scores,dist, points, arr_points,
                                  n_polys, n_rays, n_faces, 
                                  verts, faces,
                                  threshold, use_bbox, verbose, 

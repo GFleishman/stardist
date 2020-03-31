@@ -1,3 +1,10 @@
+// c.f. https://stackoverflow.com/questions/31971185/segfault-when-import-array-not-in-same-translation-unit
+#define NO_IMPORT_ARRAY
+#define PY_ARRAY_UNIQUE_SYMBOL STARDIST_SHARED_ARRAY_API
+#include <Python.h>
+#include "numpy/arrayobject.h"
+#include <algorithm>
+
 #include <stdarg.h>
 #include <math.h>
 #include <cmath>
@@ -928,6 +935,7 @@ float diff_time(const std::chrono::time_point<std::chrono::high_resolution_clock
 
 void _COMMON_non_maximum_suppression_sparse(
                     const float* scores, const float* dist, const float* points,
+                    PyArrayObject* arr_points,
                     const int n_polys, const int n_rays, const int n_faces, 
                     const float* verts, const int* faces,
                     const float threshold, const int use_bbox, const int verbose, 
@@ -945,6 +953,13 @@ void _COMMON_non_maximum_suppression_sparse(
     fflush(stdout);
   }
 
+  PyObject* sklearn_neighbors = PyImport_ImportModule("sklearn.neighbors");
+  PyObject* kdtree_class = PyObject_GetAttrString(sklearn_neighbors, (char*)"KDTree");
+  PyObject* pArgs = PyTuple_New(1);
+  PyTuple_SetItem(pArgs, 0, (PyObject*)arr_points);
+  PyObject* kdtree = PyObject_CallObject(kdtree_class, pArgs);
+  float dist_max = *std::max_element(dist, dist + n_polys*n_rays);
+  
   float * volumes = new float[n_polys];
   float * radius_inner = new float[n_polys];
   float * radius_outer = new float[n_polys];
@@ -1057,7 +1072,7 @@ void _COMMON_non_maximum_suppression_sparse(
   ProgressBar prog("suppressed");
   
   // suppress (double loop)
-  for (int i=0; i<n_polys-1; i++) {
+  for (long i=0; i<n_polys-1; i++) {
 
     long count_total = count_suppressed_pretest+count_suppressed_kernel+count_suppressed_rendered;
     int status_percentage_new = 100*count_total/n_polys;
@@ -1100,6 +1115,16 @@ void _COMMON_non_maximum_suppression_sparse(
     int Ny = curr_bbox[3]-curr_bbox[2]+1;
     int Nx = curr_bbox[5]-curr_bbox[4]+1;
 
+    npy_intp dims[2]{1, 3};
+    PyObject* point = PyArray_SimpleNewFromData(2, dims, NPY_FLOAT, PyArray_GETPTR2(arr_points, i, 0));
+    PyObject* query_radius = PyUnicode_FromString("query_radius");
+    float local_dist_max = *std::max_element(curr_dist, curr_dist + n_rays);
+    PyObject* radius = PyFloat_FromDouble(dist_max + local_dist_max);
+    PyObject* neighbors_ = PyObject_CallMethodObjArgs(kdtree, query_radius, point, radius, NULL);
+    PyObject* neighbors = PyArray_GETITEM(neighbors_, PyArray_GETPTR1((PyArrayObject*)neighbors_, 0));
+    int n_neighbors = PyArray_DIM(neighbors, 0);
+    const long * const c_neighbors = (long *) PyArray_DATA(neighbors);
+
     // compute polyverts
     polyhedron_polyverts(curr_dist, curr_point, verts, n_rays, curr_polyverts);
      
@@ -1116,15 +1141,17 @@ void _COMMON_non_maximum_suppression_sparse(
   reduction(+:timer_call_render) \
   shared(curr_rendered)
 
-    for (int j=i+1; j<n_polys; j++) {
+    for (long j=0; j<n_neighbors; j++) {
 
-      if (suppressed[j])
+      const long j_neighbor = c_neighbors[j];
+
+      if (suppressed[j_neighbor] or j_neighbor <= i)
         continue;
 
 
       std::chrono::time_point<std::chrono::high_resolution_clock> time_start;
       float iou = 0;
-      float A_min = fmin(volumes[i], volumes[j]);
+      float A_min = fmin(volumes[i], volumes[j_neighbor]);
       float A_inter = 0;
 
       // --------- first check: bounding box and inner sphere intersection  (cheap)
@@ -1133,11 +1160,11 @@ void _COMMON_non_maximum_suppression_sparse(
       // upper  bound of intersection and IoU
       A_inter = fmin(intersect_sphere_isotropic(radius_outer_isotropic[i],
                                                 &points[3*i],
-                                                radius_outer_isotropic[j],
-                                                &points[3*j],
+                                                radius_outer_isotropic[j_neighbor],
+                                                &points[3*j_neighbor],
                                                 anisotropy
                                                 ),
-                     intersect_bbox(&bbox[6*i],&bbox[6*j]));
+                     intersect_bbox(&bbox[6*i],&bbox[6*j_neighbor]));
       count_call_upper++;
 
 	   // if it doesn't intersect at all, we can move on...
@@ -1152,8 +1179,8 @@ void _COMMON_non_maximum_suppression_sparse(
       // lower bound of intersection and IoU
       A_inter = intersect_sphere_isotropic(radius_inner_isotropic[i],
                                            &points[3*i],
-                                           radius_inner_isotropic[j],
-                                           &points[3*j],
+                                           radius_inner_isotropic[j_neighbor],
+                                           &points[3*j_neighbor],
                                            anisotropy
                                            );
       count_call_lower++;
@@ -1164,14 +1191,14 @@ void _COMMON_non_maximum_suppression_sparse(
 
       if (iou>threshold){
         count_suppressed_pretest++;
-        suppressed[j] = true;
+        suppressed[j_neighbor] = true;
         continue;
       }
 
       float * polyverts = new float[3*n_rays];
 
       // compute polyverts of the second polyhedron
-      polyhedron_polyverts(&dist[j*n_rays], &points[3*j],
+      polyhedron_polyverts(&dist[j_neighbor*n_rays], &points[3*j_neighbor],
                            verts,n_rays, polyverts);
 
 
@@ -1181,7 +1208,7 @@ void _COMMON_non_maximum_suppression_sparse(
        
       float A_inter_kernel = qhull_overlap_kernel(
 	   								  curr_polyverts, curr_point,
-	   								  polyverts, &points[3*j],
+	   								  polyverts, &points[3*j_neighbor],
 	   								  faces, n_rays, n_faces);
 
       count_call_kernel++;
@@ -1192,7 +1219,7 @@ void _COMMON_non_maximum_suppression_sparse(
        
       if (iou>threshold){
         count_suppressed_kernel++;
-        suppressed[j] = true;
+        suppressed[j_neighbor] = true;
         delete[] polyverts;
         continue;
       }
@@ -1202,7 +1229,7 @@ void _COMMON_non_maximum_suppression_sparse(
       
       float A_inter_convex = qhull_overlap_convex_hulls(
 	   								  curr_polyverts, curr_point,
-	   								  polyverts, &points[3*j],
+	   								  polyverts, &points[3*j_neighbor],
 	   								  faces, n_rays, n_faces);
       count_call_convex++;
       timer_call_convex += diff_time(time_start);
@@ -1233,8 +1260,8 @@ void _COMMON_non_maximum_suppression_sparse(
         }
       }
        
-      float A_inter_render = overlap_render_polyhedron(&dist[j*n_rays],
-                                                       &points[3*j],
+      float A_inter_render = overlap_render_polyhedron(&dist[j_neighbor*n_rays],
+                                                       &points[3*j_neighbor],
                                                        curr_bbox,
                                                        polyverts,
                                                        faces, n_rays, n_faces,
@@ -1247,7 +1274,7 @@ void _COMMON_non_maximum_suppression_sparse(
 
       if (iou>threshold){
         count_suppressed_rendered++;
-        suppressed[j] = true;
+        suppressed[j_neighbor] = true;
       }
 
       delete[] polyverts;
